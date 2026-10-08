@@ -1,0 +1,12 @@
+{
+  "name": "mini-games",
+  "version": "1.0.0",
+  "description": "多人在线小游戏平台",
+  "main": "game.js",
+  "scripts": {
+    "start": "node game.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
