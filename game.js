@@ -1,8 +1,8 @@
 'use strict';
 /*
- * 欢乐小游戏 · 多人在线小游戏平台
+ * 欢乐小游戏 · 多人在线小游戏平台 v2
  * - 用户注册 / 登录
- * - 跳一跳 / 贪吃蛇 / 你画我猜
+ * - 跳一跳 / 贪吃蛇(单/联) / 你画我猜 / 2048 / 打砖块 / 五子棋
  * - 排行榜 + SSE 实时
  * - 纯 Node 内置模块，零依赖
  */
@@ -179,7 +179,7 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
-/* ============ 贪吃蛇 ============ */
+/* ============ 贪吃蛇（联机） ============ */
 const SNAKE_W = 28, SNAKE_H = 20;
 const DIRS = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
 const SNAKE_COLORS = ['#e06f92', '#6f9ce0', '#7bb87b', '#e0a56f'];
@@ -281,7 +281,6 @@ function startSnake(room) {
       roomBroadcast(room, 'snake-end', { state: s });
       return;
     }
-
     roomBroadcast(room, 'snake-state', { state: s });
   }, 150);
 
@@ -361,6 +360,51 @@ function endDrawRound(room) {
   }, 4000);
 }
 
+/* ============ 五子棋（联机） ============ */
+const GOMOKU_N = 15;
+
+function startGomoku(room) {
+  const usernames = [...room.players.keys()];
+  if (usernames.length < 2) return;
+  const players = usernames.slice(0, 2);
+  const board = [];
+  for (let i = 0; i < GOMOKU_N; i++) board.push(new Array(GOMOKU_N).fill(0));
+  room.state = {
+    n: GOMOKU_N,
+    board,
+    players,
+    turn: 1, // 1 黑棋 2 白棋
+    winner: 0,
+    lastMove: null,
+    scores: {}
+  };
+  players.forEach(p => room.state.scores[p] = 0);
+  roomBroadcast(room, 'gomoku-start', {
+    state: room.state,
+    black: players[0],
+    white: players[1]
+  });
+}
+
+function gomokuCheck(board, x, y, color) {
+  const dirs = [[1,0],[0,1],[1,1],[1,-1]];
+  for (const [dx, dy] of dirs) {
+    let count = 1;
+    for (let k = 1; k < 5; k++) {
+      const nx = x + dx * k, ny = y + dy * k;
+      if (nx < 0 || nx >= GOMOKU_N || ny < 0 || ny >= GOMOKU_N) break;
+      if (board[nx][ny] === color) count++; else break;
+    }
+    for (let k = 1; k < 5; k++) {
+      const nx = x - dx * k, ny = y - dy * k;
+      if (nx < 0 || nx >= GOMOKU_N || ny < 0 || ny >= GOMOKU_N) break;
+      if (board[nx][ny] === color) count++; else break;
+    }
+    if (count >= 5) return true;
+  }
+  return false;
+}
+
 /* ============ HTTP 服务 ============ */
 const server = http.createServer(async (req, res) => {
   const u = url.parse(req.url, true);
@@ -432,7 +476,9 @@ const server = http.createServer(async (req, res) => {
         const body = JSON.parse((await readBody(req, 1e4)).toString() || '{}');
         const game = String(body.game || '');
         const score = Math.max(0, Math.floor(Number(body.score) || 0));
-        if (game !== 'jump') return sendJSON(res, 400, { error: '不支持的游戏' });
+        if (!['jump', 'snake', 'g2048', 'breakout'].includes(game)) {
+          return sendJSON(res, 400, { error: '不支持的游戏' });
+        }
         recordScore(game, me, score);
         return sendJSON(res, 200, { ok: true, list: getLeaderboard(game, 20) });
       }
@@ -440,7 +486,9 @@ const server = http.createServer(async (req, res) => {
       if (method === 'POST' && p === '/api/room/create') {
         const body = JSON.parse((await readBody(req, 1e4)).toString() || '{}');
         const game = String(body.game || '');
-        if (!['snake', 'draw'].includes(game)) return sendJSON(res, 400, { error: '不支持的游戏' });
+        if (!['snake', 'draw', 'gomoku'].includes(game)) {
+          return sendJSON(res, 400, { error: '不支持的游戏' });
+        }
         const room = createRoom(game, me);
         joinRoom(room, me);
         return sendJSON(res, 200, { ok: true, roomId: room.id, game });
@@ -451,6 +499,9 @@ const server = http.createServer(async (req, res) => {
         const roomId = String(body.roomId || '').trim().toLowerCase();
         const room = rooms.get(roomId);
         if (!room) return sendJSON(res, 404, { error: '房间不存在或已关闭' });
+        if (room.game === 'gomoku' && room.players.size >= 2) {
+          return sendJSON(res, 400, { error: '五子棋房间已满（最多 2 人）' });
+        }
         joinRoom(room, me);
         roomBroadcast(room, 'players', { players: [...room.players.keys()], host: room.host });
         return sendJSON(res, 200, { ok: true, roomId: room.id, game: room.game });
@@ -498,6 +549,8 @@ const server = http.createServer(async (req, res) => {
               timeLeft: room.state.timeLeft, strokes: room.state.strokes,
               guesses: room.state.guesses
             }) + '\n\n');
+          } else if (room.game === 'gomoku') {
+            res.write('event: gomoku-sync\ndata: ' + JSON.stringify({ state: room.state }) + '\n\n');
           }
         }
 
@@ -535,6 +588,9 @@ const server = http.createServer(async (req, res) => {
           } else if (room.game === 'draw') {
             if (room.players.size < 2) return sendJSON(res, 400, { error: '至少需要 2 人' });
             startDrawGame(room);
+          } else if (room.game === 'gomoku') {
+            if (room.players.size < 2) return sendJSON(res, 400, { error: '需要恰好 2 人' });
+            startGomoku(room);
           }
           return sendJSON(res, 200, { ok: true });
         }
@@ -602,6 +658,42 @@ const server = http.createServer(async (req, res) => {
           }
         }
 
+        if (room.game === 'gomoku') {
+          const s = room.state;
+          if (!s) return sendJSON(res, 400, { error: '游戏未开始' });
+          if (s.winner) return sendJSON(res, 400, { error: '对局已结束' });
+          const myColor = s.players[0] === me ? 1 : (s.players[1] === me ? 2 : 0);
+          if (!myColor) return sendJSON(res, 403, { error: '你不是本局玩家' });
+          if (s.turn !== myColor) return sendJSON(res, 400, { error: '还没到你落子' });
+
+          if (act === 'place') {
+            const x = Math.floor(Number(body.x));
+            const y = Math.floor(Number(body.y));
+            if (x < 0 || x >= GOMOKU_N || y < 0 || y >= GOMOKU_N) {
+              return sendJSON(res, 400, { error: '位置不合法' });
+            }
+            if (s.board[x][y] !== 0) return sendJSON(res, 400, { error: '这里已经有棋子' });
+            s.board[x][y] = myColor;
+            s.lastMove = { x, y, color: myColor };
+            if (gomokuCheck(s.board, x, y, myColor)) {
+              s.winner = myColor;
+              s.scores[me] = (s.scores[me] || 0) + 1;
+              recordScore('gomoku', me, s.scores[me]);
+              roomBroadcast(room, 'gomoku-end', { state: s, winner: me });
+            } else {
+              s.turn = myColor === 1 ? 2 : 1;
+              roomBroadcast(room, 'gomoku-move', { state: s });
+            }
+            return sendJSON(res, 200, { ok: true });
+          }
+
+          if (act === 'restart') {
+            if (!s.winner) return sendJSON(res, 400, { error: '对局进行中' });
+            startGomoku(room);
+            return sendJSON(res, 200, { ok: true });
+          }
+        }
+
         return sendJSON(res, 400, { error: '无效操作' });
       }
 
@@ -631,7 +723,6 @@ const INDEX_HTML = `<!doctype html>
   --fg:#e8ecf5;--muted:#8b93a7;--border:#2a3046;
   --accent:#7c5cff;--accent-2:#9d7dff;--accent-soft:rgba(124,92,255,.15);
   --pink:#e06f92;--green:#5fd28f;--yellow:#f5c96b;--red:#f56565;
-  --radius:14px;--radius-lg:20px;
   --shadow:0 20px 50px -25px rgba(0,0,0,.6);
   --font:"Noto Sans SC Variable","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
 }
@@ -700,9 +791,9 @@ input,textarea{font:inherit;color:inherit}
 .section{padding:36px 0}
 .section h2{font-size:24px;font-weight:700;margin:0 0 6px;letter-spacing:-.02em}
 .section .sub{color:var(--muted);margin:0 0 26px;font-size:14.5px}
-.game-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.game-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
 .game-card{position:relative;background:var(--panel);border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:24px;cursor:pointer;overflow:hidden;
+  border-radius:20px;padding:24px;cursor:pointer;overflow:hidden;
   transition:transform .35s cubic-bezier(.2,.7,.3,1),border-color .35s,box-shadow .35s}
 .game-card::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
   background:radial-gradient(400px 200px at 100% 0%, var(--accent-soft), transparent 60%);
@@ -715,16 +806,19 @@ input,textarea{font:inherit;color:inherit}
 .game-icon.purple{background:rgba(124,92,255,.15);color:var(--accent)}
 .game-icon.green{background:rgba(95,210,143,.15);color:var(--green)}
 .game-icon.pink{background:rgba(224,111,146,.15);color:var(--pink)}
+.game-icon.yellow{background:rgba(245,201,107,.15);color:var(--yellow)}
+.game-icon.blue{background:rgba(59,130,246,.15);color:#3b82f6}
+.game-icon.cyan{background:rgba(6,182,212,.15);color:#06b6d4}
 .game-card h3{font-size:18px;margin:0 0 6px;position:relative;z-index:1}
 .game-card p{color:var(--muted);font-size:13.5px;margin:0 0 14px;position:relative;z-index:1;min-height:40px}
 .game-tags{display:flex;gap:6px;flex-wrap:wrap;position:relative;z-index:1}
 .tag{font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:6px;background:var(--panel-3);color:var(--muted)}
 .tag.accent{background:var(--accent-soft);color:var(--accent)}
 
-.lb-panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;margin-top:20px}
+.lb-panel{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:20px;margin-top:20px}
 .lb-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap}
 .lb-head h3{font-size:16px;margin:0;font-weight:700}
-.lb-tabs{display:flex;gap:6px;background:var(--panel-2);padding:3px;border-radius:10px}
+.lb-tabs{display:flex;gap:6px;background:var(--panel-2);padding:3px;border-radius:10px;flex-wrap:wrap}
 .lb-tabs button{border:0;background:transparent;color:var(--muted);padding:6px 12px;
   border-radius:7px;font-size:12.5px;font-weight:600;transition:all .2s}
 .lb-tabs button.on{background:var(--panel-3);color:var(--accent)}
@@ -750,7 +844,12 @@ input,textarea{font:inherit;color:inherit}
 .back-btn:hover{border-color:var(--accent);color:var(--accent)}
 .back-btn svg{width:18px;height:18px}
 
-.jump-stage{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);
+.mode-tabs{display:flex;gap:6px;background:var(--panel-2);padding:3px;border-radius:10px;margin-bottom:16px;width:max-content}
+.mode-tabs button{border:0;background:transparent;color:var(--muted);padding:8px 16px;
+  border-radius:7px;font-size:13.5px;font-weight:600;transition:all .2s}
+.mode-tabs button.on{background:var(--accent);color:#fff}
+
+.jump-stage, .snake-stage, .game-stage{background:var(--panel);border:1px solid var(--border);border-radius:20px;
   padding:18px;box-shadow:var(--shadow)}
 .jump-hud{display:flex;align-items:center;gap:16px;margin-bottom:14px;flex-wrap:wrap}
 .hud-item{background:var(--panel-2);border:1px solid var(--border);border-radius:10px;
@@ -760,7 +859,7 @@ input,textarea{font:inherit;color:inherit}
   background:linear-gradient(180deg,#1a1d2b 0%,#131625 100%);touch-action:none;cursor:pointer}
 .jump-tip{text-align:center;color:var(--muted);font-size:13px;margin-top:12px}
 
-.room-panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);
+.room-panel{background:var(--panel);border:1px solid var(--border);border-radius:20px;
   padding:22px;box-shadow:var(--shadow)}
 .room-id{display:inline-flex;align-items:center;gap:8px;background:var(--accent-soft);color:var(--accent);
   padding:8px 16px;border-radius:10px;font-weight:700;letter-spacing:2px;
@@ -780,9 +879,9 @@ input,textarea{font:inherit;color:inherit}
 .snake-wrap{display:grid;gap:18px;grid-template-columns:1fr 240px}
 @media(max-width:800px){.snake-wrap{grid-template-columns:1fr}}
 .snake-canvas-box{background:var(--panel);border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:14px;box-shadow:var(--shadow)}
+  border-radius:20px;padding:14px;box-shadow:var(--shadow)}
 .snake-canvas{width:100%;height:auto;display:block;border-radius:10px;background:#0d0f18}
-.snake-side{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px}
+.snake-side{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:16px}
 .snake-side h4{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:0 0 10px;font-weight:600}
 .snake-scores{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
 .snake-score-row{display:flex;align-items:center;gap:10px;font-size:13.5px}
@@ -801,7 +900,7 @@ input,textarea{font:inherit;color:inherit}
 .draw-wrap{display:grid;gap:18px;grid-template-columns:1fr 300px}
 @media(max-width:900px){.draw-wrap{grid-template-columns:1fr}}
 .draw-main{background:var(--panel);border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:14px;box-shadow:var(--shadow)}
+  border-radius:20px;padding:14px;box-shadow:var(--shadow)}
 .draw-info{display:flex;align-items:center;justify-content:space-between;gap:12px;
   flex-wrap:wrap;margin-bottom:12px}
 .draw-word{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
@@ -816,7 +915,7 @@ input,textarea{font:inherit;color:inherit}
 .color-btn{width:26px;height:26px;border-radius:50%;border:2px solid transparent;padding:0;transition:transform .15s}
 .color-btn.on{border-color:var(--fg);transform:scale(1.15)}
 .draw-side{background:var(--panel);border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:16px;display:flex;flex-direction:column;min-height:400px}
+  border-radius:20px;padding:16px;display:flex;flex-direction:column;min-height:400px}
 .draw-side h4{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:0 0 12px;font-weight:600}
 .guess-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;
   margin-bottom:12px;padding-right:4px;max-height:420px}
@@ -827,6 +926,50 @@ input,textarea{font:inherit;color:inherit}
 .guess-item.sys{background:transparent;color:var(--muted);text-align:center;font-size:12.5px;padding:4px}
 .guess-form{display:flex;gap:8px}
 .guess-form input{flex:1;min-width:0}
+
+/* 2048 */
+.g2048-stage{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:18px;box-shadow:var(--shadow)}
+.g2048-board{
+  position:relative;width:min(100%,460px);aspect-ratio:1;margin:12px auto;
+  background:#1a1d2b;border-radius:14px;padding:12px;
+  display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);
+  gap:12px;touch-action:none;user-select:none;
+}
+.tile{
+  display:grid;place-items:center;border-radius:10px;font-weight:800;
+  font-size:clamp(20px,5vw,34px);color:#2a2118;transition:transform .12s,background .12s;
+  background:#2d3450;color:transparent;
+}
+.tile[data-v="2"]{background:#eee4da}
+.tile[data-v="4"]{background:#ede0c8}
+.tile[data-v="8"]{background:#f2b179;color:#fff}
+.tile[data-v="16"]{background:#f59563;color:#fff}
+.tile[data-v="32"]{background:#f67c5f;color:#fff}
+.tile[data-v="64"]{background:#f65e3b;color:#fff}
+.tile[data-v="128"]{background:#edcf72;color:#fff;font-size:clamp(18px,4.5vw,30px)}
+.tile[data-v="256"]{background:#edcc61;color:#fff;font-size:clamp(18px,4.5vw,30px)}
+.tile[data-v="512"]{background:#edc850;color:#fff;font-size:clamp(18px,4.5vw,30px)}
+.tile[data-v="1024"]{background:#edc53f;color:#fff;font-size:clamp(15px,3.8vw,26px)}
+.tile[data-v="2048"]{background:#edc22e;color:#fff;font-size:clamp(15px,3.8vw,26px)}
+.tile.big{background:#3c3a32;color:#fff;font-size:clamp(14px,3.4vw,22px)}
+.tile.spawn{animation:pop .18s ease}
+@keyframes pop{0%{transform:scale(.4);opacity:.3}100%{transform:scale(1);opacity:1}}
+
+/* 打砖块 */
+.breakout-stage{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:18px;box-shadow:var(--shadow)}
+.breakout-canvas{width:100%;height:auto;display:block;border-radius:12px;background:#0d0f18;touch-action:none}
+
+/* 五子棋 */
+.gomoku-stage{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:18px;box-shadow:var(--shadow)}
+.gomoku-wrap{display:grid;gap:18px;grid-template-columns:1fr 240px}
+@media(max-width:800px){.gomoku-wrap{grid-template-columns:1fr}}
+.gomoku-canvas{width:100%;height:auto;display:block;border-radius:10px;background:#d9b382;cursor:pointer;touch-action:manipulation}
+.gomoku-side{background:var(--panel-2);border:1px solid var(--border);border-radius:14px;padding:16px}
+.gomoku-turn{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-weight:700}
+.gomoku-turn .stone{width:22px;height:22px;border-radius:50%;border:2px solid rgba(0,0,0,.3);flex:none}
+.stone.black{background:#1a1a1a}
+.stone.white{background:#f5f5f5}
+.gomoku-info{font-size:13.5px;color:var(--muted);line-height:1.7}
 
 .overlay{position:fixed;inset:0;z-index:100;display:none;place-items:center;padding:24px;
   background:rgba(8,10,16,.82);backdrop-filter:blur(8px)}
@@ -921,7 +1064,8 @@ input,textarea{font:inherit;color:inherit}
   var $ = function(id){ return document.getElementById(id); };
   var state = {
     username: null, view: 'lobby', room: null, es: null,
-    lbGame: 'jump', jump: null, snake: null, draw: null
+    lbGame: 'jump', jump: null, snake: null, draw: null, gomoku: null,
+    g2048: null, breakout: null
   };
 
   function toast(msg){
@@ -951,14 +1095,12 @@ input,textarea{font:inherit;color:inherit}
     $('overlayCard').innerHTML = html;
     $('overlay').classList.add('on');
   }
-  function hideOverlay(){
-    $('overlay').classList.remove('on');
-  }
+  function hideOverlay(){ $('overlay').classList.remove('on'); }
   $('overlay').addEventListener('click', function(e){
     if (e.target === $('overlay')) hideOverlay();
   });
 
-  /* ---------- 登录注册 ---------- */
+  /* 登录注册 */
   var authMode = 'login';
   document.querySelectorAll('.login-tabs button').forEach(function(b){
     b.addEventListener('click', function(){
@@ -987,9 +1129,7 @@ input,textarea{font:inherit;color:inherit}
         $('authMsg').textContent = '';
         enterApp();
       })
-      .catch(function(err){
-        $('authMsg').textContent = err.message || '出错了';
-      })
+      .catch(function(err){ $('authMsg').textContent = err.message || '出错了'; })
       .then(function(){ $('authBtn').disabled = false; });
   });
   $('logoutBtn').addEventListener('click', function(){
@@ -1005,10 +1145,12 @@ input,textarea{font:inherit;color:inherit}
     go('lobby');
   }
 
-  /* ---------- 路由 ---------- */
   function go(view){
     if (state.jump && state.jump.destroy) state.jump.destroy();
-    state.jump = null;
+    if (state.g2048 && state.g2048.destroy) state.g2048.destroy();
+    if (state.breakout && state.breakout.destroy) state.breakout.destroy();
+    if (state.snakeSingle && state.snakeSingle.destroy) state.snakeSingle.destroy();
+    state.jump = null; state.g2048 = null; state.breakout = null; state.snakeSingle = null;
     if (state.es) { state.es.close(); state.es = null; }
     state.room = null;
     state.view = view;
@@ -1016,33 +1158,53 @@ input,textarea{font:inherit;color:inherit}
     else if (view === 'jump') showJump();
     else if (view === 'snake') showSnakeLobby();
     else if (view === 'draw') showDrawLobby();
+    else if (view === 'gomoku') showGomokuLobby();
+    else if (view === 'g2048') show2048();
+    else if (view === 'breakout') showBreakout();
   }
 
-  /* ---------- 大厅 ---------- */
   function showLobby(){
     var main = $('main');
     main.innerHTML =
       '<div class="wrap section">' +
         '<h2>选择一个小游戏</h2>' +
-        '<p class="sub">单人挑战或和好友开房间联机，一起玩才更开心</p>' +
+        '<p class="sub">6 款游戏任你挑，单人挑战或和好友联机</p>' +
         '<div class="game-grid">' +
           '<div class="game-card" data-game="jump">' +
             '<div class="game-icon purple">🎯</div>' +
             '<h3>跳一跳</h3>' +
-            '<p>按住蓄力，松开跳跃，落到下一个方块上得一分。考验节奏感的小挑战。</p>' +
+            '<p>按住蓄力，松开跳跃，落到下一个方块上得一分。</p>' +
             '<div class="game-tags"><span class="tag accent">单人</span><span class="tag">排行榜</span></div>' +
           '</div>' +
           '<div class="game-card" data-game="snake">' +
             '<div class="game-icon green">🐍</div>' +
-            '<h3>贪吃蛇对战</h3>' +
-            '<p>最多 4 人同房间实时对战，吃到食物变长、得分，小心撞墙和撞蛇。</p>' +
-            '<div class="game-tags"><span class="tag accent">联机</span><span class="tag">2-4 人</span></div>' +
+            '<h3>贪吃蛇</h3>' +
+            '<p>单人闯关或最多 4 人同房间实时对战，吃到食物变长得分。</p>' +
+            '<div class="game-tags"><span class="tag accent">单/联机</span><span class="tag">1-4 人</span></div>' +
+          '</div>' +
+          '<div class="game-card" data-game="g2048">' +
+            '<div class="game-icon yellow">🔢</div>' +
+            '<h3>2048</h3>' +
+            '<p>滑动合并相同数字，目标是凑出 2048。考验策略的经典益智游戏。</p>' +
+            '<div class="game-tags"><span class="tag accent">单人</span><span class="tag">排行榜</span></div>' +
+          '</div>' +
+          '<div class="game-card" data-game="breakout">' +
+            '<div class="game-icon blue">🧱</div>' +
+            '<h3>打砖块</h3>' +
+            '<p>控制挡板反弹小球，打碎所有砖块。手速与反应的双重考验。</p>' +
+            '<div class="game-tags"><span class="tag accent">单人</span><span class="tag">排行榜</span></div>' +
           '</div>' +
           '<div class="game-card" data-game="draw">' +
             '<div class="game-icon pink">🎨</div>' +
             '<h3>你画我猜</h3>' +
-            '<p>轮流当画手，把看到的词画出来让其他人猜。猜对越多，得分越高。</p>' +
+            '<p>轮流当画手，把看到的词画出来让其他人猜。</p>' +
             '<div class="game-tags"><span class="tag accent">联机</span><span class="tag">2+ 人</span></div>' +
+          '</div>' +
+          '<div class="game-card" data-game="gomoku">' +
+            '<div class="game-icon cyan">⚫</div>' +
+            '<h3>五子棋</h3>' +
+            '<p>15×15 棋盘，黑白轮流落子。横竖斜先连成五子者获胜。</p>' +
+            '<div class="game-tags"><span class="tag accent">联机</span><span class="tag">2 人</span></div>' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -1053,7 +1215,10 @@ input,textarea{font:inherit;color:inherit}
             '<div class="lb-tabs" id="lbTabs">' +
               '<button data-game="jump" class="on">跳一跳</button>' +
               '<button data-game="snake">贪吃蛇</button>' +
+              '<button data-game="g2048">2048</button>' +
+              '<button data-game="breakout">打砖块</button>' +
               '<button data-game="draw">你画我猜</button>' +
+              '<button data-game="gomoku">五子棋</button>' +
             '</div>' +
           '</div>' +
           '<div class="lb-list" id="lbList"><div class="lb-empty">加载中…</div></div>' +
@@ -1061,9 +1226,7 @@ input,textarea{font:inherit;color:inherit}
       '</div>';
 
     main.querySelectorAll('.game-card').forEach(function(card){
-      card.addEventListener('click', function(){
-        go(card.getAttribute('data-game'));
-      });
+      card.addEventListener('click', function(){ go(card.getAttribute('data-game')); });
     });
     main.querySelectorAll('#lbTabs button').forEach(function(b){
       b.addEventListener('click', function(){
@@ -1134,24 +1297,13 @@ input,textarea{font:inherit;color:inherit}
     var ctx = canvas.getContext('2d');
     var W = canvas.width, H = canvas.height;
 
-    var game = {
-      blocks: [], player: null, camX: 0, score: 0,
-      power: 0, charging: false, state: 'idle',
-      destroyed: false
-    };
+    var game = { blocks: [], player: null, camX: 0, score: 0, power: 0, charging: false, state: 'idle', destroyed: false };
 
     function reset(){
       var groundY = H - 100;
-      game.blocks = [
-        { x: 0, y: groundY, w: 120, h: 100 },
-        { x: 300, y: groundY, w: 120, h: 100 }
-      ];
+      game.blocks = [{ x: 0, y: groundY, w: 120, h: 100 }, { x: 300, y: groundY, w: 120, h: 100 }];
       game.player = { x: 60, y: groundY - 34, w: 34, h: 34 };
-      game.camX = 0;
-      game.score = 0;
-      game.state = 'idle';
-      game.power = 0;
-      game.charging = false;
+      game.camX = 0; game.score = 0; game.state = 'idle'; game.power = 0; game.charging = false;
       $('jumpScore').textContent = '0';
       draw();
     }
@@ -1282,8 +1434,7 @@ input,textarea{font:inherit;color:inherit}
             game.player.y = H - 100 - game.player.h;
             game.player.x = landBlock.x + landBlock.w / 2 - game.player.w / 2;
             game.state = 'idle';
-            var targetCam = game.player.x - W * 0.35;
-            animateCam(targetCam);
+            animateCam(game.player.x - W * 0.35);
           } else {
             game.state = 'falling';
             var fallStart = game.player.y;
@@ -1294,11 +1445,8 @@ input,textarea{font:inherit;color:inherit}
               game.player.y = fallStart + ft * 300;
               game.player.x += 1.5;
               draw();
-              if (ft < 1){
-                requestAnimationFrame(fallStep);
-              } else {
-                gameOver();
-              }
+              if (ft < 1) requestAnimationFrame(fallStep);
+              else gameOver();
             };
             requestAnimationFrame(fallStep);
           }
@@ -1325,10 +1473,8 @@ input,textarea{font:inherit;color:inherit}
       api('POST', '/api/score', { game: 'jump', score: game.score }).catch(function(){});
       var best = parseInt($('jumpBest').textContent, 10) || 0;
       if (game.score > best) $('jumpBest').textContent = game.score;
-
       showOverlay(
-        '<h2>游戏结束</h2>' +
-        '<p>再来一次，挑战更高分！</p>' +
+        '<h2>游戏结束</h2><p>再来一次，挑战更高分！</p>' +
         '<div class="big-score">' + game.score + '</div>' +
         '<div class="row">' +
           '<button class="btn btn-primary" id="ovRestart">再来一次</button>' +
@@ -1349,25 +1495,15 @@ input,textarea{font:inherit;color:inherit}
       startCharge();
     };
     var onPointerUp = function(e){
-      if (game.state === 'charging'){
-        e.preventDefault();
-        releaseCharge();
-      }
+      if (game.state === 'charging'){ e.preventDefault(); releaseCharge(); }
     };
     canvas.addEventListener('mousedown', onPointerDown);
     canvas.addEventListener('touchstart', onPointerDown, { passive: false });
     window.addEventListener('mouseup', onPointerUp);
     window.addEventListener('touchend', onPointerUp);
 
-    var onKey = function(e){
-      if (e.code === 'Space'){
-        e.preventDefault();
-        if (!e.repeat) startCharge();
-      }
-    };
-    var onKeyUp = function(e){
-      if (e.code === 'Space'){ e.preventDefault(); releaseCharge(); }
-    };
+    var onKey = function(e){ if (e.code === 'Space'){ e.preventDefault(); if (!e.repeat) startCharge(); } };
+    var onKeyUp = function(e){ if (e.code === 'Space'){ e.preventDefault(); releaseCharge(); } };
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKeyUp);
 
@@ -1393,10 +1529,247 @@ input,textarea{font:inherit;color:inherit}
     };
   }
 
-  /* ===================== 贪吃蛇 ===================== */
+  /* ===================== 贪吃蛇（单人 + 联机入口） ===================== */
   function showSnakeLobby(){
     var main = $('main');
-    main.innerHTML = gameHeader('🐍 贪吃蛇对战') +
+    main.innerHTML = gameHeader('🐍 贪吃蛇') +
+      '<div class="mode-tabs" id="snakeModeTabs">' +
+        '<button class="on" data-mode="single">单人模式</button>' +
+        '<button data-mode="multi">联机模式</button>' +
+      '</div>' +
+      '<div id="snakeModeBody"></div>' +
+    '</div>';
+
+    $('backBtn').addEventListener('click', function(){ go('lobby'); });
+    function render(mode){
+      if (mode === 'single') renderSnakeSingle();
+      else renderSnakeMulti();
+    }
+    document.querySelectorAll('#snakeModeTabs button').forEach(function(b){
+      b.addEventListener('click', function(){
+        document.querySelectorAll('#snakeModeTabs button').forEach(function(x){ x.classList.toggle('on', x === b); });
+        render(b.getAttribute('data-mode'));
+      });
+    });
+    render('single');
+  }
+
+  function renderSnakeSingle(){
+    var body = $('snakeModeBody');
+    body.innerHTML =
+      '<div class="snake-stage">' +
+        '<div class="jump-hud">' +
+          '<div class="hud-item">得分<span class="val" id="ssScore">0</span></div>' +
+          '<div class="hud-item">最高<span class="val" id="ssBest">0</span></div>' +
+          '<div style="flex:1"></div>' +
+          '<button class="btn btn-secondary btn-sm" id="ssRestart" type="button">重新开始</button>' +
+        '</div>' +
+        '<div class="snake-wrap">' +
+          '<div class="snake-canvas-box" style="padding:8px">' +
+            '<canvas class="snake-canvas" id="ssCanvas" width="560" height="400"></canvas>' +
+          '</div>' +
+          '<div class="snake-side">' +
+            '<h4>控制方式</h4>' +
+            '<div class="gomoku-info">键盘 ↑↓←→ 或 WASD<br>手机可用下方方向键</div>' +
+            '<div class="snake-ctrl" style="margin-top:14px">' +
+              '<button class="empty"></button><button data-dir="up">↑</button><button class="empty"></button>' +
+              '<button data-dir="left">←</button><button data-dir="down">↓</button><button data-dir="right">→</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    var W = 28, H = 20;
+    var canvas = $('ssCanvas');
+    var ctx = canvas.getContext('2d');
+    var cellW = canvas.width / W;
+    var cellH = canvas.height / H;
+
+    var game = {
+      snake: [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }],
+      dir: 'right', nextDir: 'right',
+      food: { x: 15, y: 10 },
+      score: 0, alive: true, destroyed: false,
+      timer: null
+    };
+
+    function randFood(){
+      while (true){
+        var x = Math.floor(Math.random() * W);
+        var y = Math.floor(Math.random() * H);
+        if (!game.snake.some(function(s){ return s.x === x && s.y === y; })) return { x, y };
+      }
+    }
+
+    function draw(){
+      ctx.fillStyle = '#0d0f18';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = 'rgba(124,92,255,.06)';
+      ctx.lineWidth = 1;
+      for (var i = 1; i < W; i++){
+        ctx.beginPath(); ctx.moveTo(i * cellW, 0); ctx.lineTo(i * cellW, canvas.height); ctx.stroke();
+      }
+      for (var j = 1; j < H; j++){
+        ctx.beginPath(); ctx.moveTo(0, j * cellH); ctx.lineTo(canvas.width, j * cellH); ctx.stroke();
+      }
+
+      // 食物
+      var fx = game.food.x * cellW + cellW / 2;
+      var fy = game.food.y * cellH + cellH / 2;
+      var r = Math.min(cellW, cellH) * 0.32;
+      ctx.fillStyle = '#f5c96b';
+      ctx.beginPath();
+      ctx.arc(fx, fy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowColor = '#f5c96b';
+      ctx.shadowBlur = 15;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // 蛇
+      game.snake.forEach(function(b, i){
+        var x = b.x * cellW, y = b.y * cellH;
+        var alpha = 1 - i / (game.snake.length + 5) * 0.6;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#7bb87b';
+        roundRectS(ctx, x + 1, y + 1, cellW - 2, cellH - 2, Math.min(cellW, cellH) * 0.3);
+        ctx.fill();
+        if (i === 0){
+          ctx.shadowColor = '#7bb87b';
+          ctx.shadowBlur = 14;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#fff';
+          var ex = x + cellW / 2, ey = y + cellH / 2;
+          var er = Math.min(cellW, cellH) * 0.1;
+          ctx.beginPath(); ctx.arc(ex - cellW * 0.15, ey, er, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(ex + cellW * 0.15, ey, er, 0, Math.PI * 2); ctx.fill();
+        }
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    function roundRectS(c, x, y, w, h, r){
+      c.beginPath();
+      c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r);
+      c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r);
+      c.arcTo(x, y, x + w, y, r);
+      c.closePath();
+    }
+
+    function tick(){
+      if (!game.alive || game.destroyed) return;
+      var cur = { up:{x:0,y:-1}, down:{x:0,y:1}, left:{x:-1,y:0}, right:{x:1,y:0} };
+      var c = cur[game.dir], n = cur[game.nextDir];
+      if (!(c.x + n.x === 0 && c.y + n.y === 0)) game.dir = game.nextDir;
+      var d = cur[game.dir];
+      var head = game.snake[0];
+      var nh = { x: head.x + d.x, y: head.y + d.y };
+      if (nh.x < 0 || nh.x >= W || nh.y < 0 || nh.y >= H){
+        return gameOver();
+      }
+      // 撞自己
+      if (game.snake.some(function(s, i){ return i < game.snake.length - 1 && s.x === nh.x && s.y === nh.y; })){
+        return gameOver();
+      }
+      game.snake.unshift(nh);
+      if (nh.x === game.food.x && nh.y === game.food.y){
+        game.score += 10;
+        $('ssScore').textContent = game.score;
+        game.food = randFood();
+      } else {
+        game.snake.pop();
+      }
+      draw();
+    }
+
+    function gameOver(){
+      game.alive = false;
+      if (game.timer) clearInterval(game.timer);
+      api('POST', '/api/score', { game: 'snake', score: game.score }).catch(function(){});
+      var best = parseInt($('ssBest').textContent, 10) || 0;
+      if (game.score > best) $('ssBest').textContent = game.score;
+      showOverlay(
+        '<h2>游戏结束</h2><p>你的得分</p>' +
+        '<div class="big-score">' + game.score + '</div>' +
+        '<div class="row">' +
+          '<button class="btn btn-primary" id="ovSSRestart">再来一次</button>' +
+          '<button class="btn btn-secondary" id="ovSSLobby">回大厅</button>' +
+        '</div>'
+      );
+      setTimeout(function(){
+        var b = document.getElementById('ovSSRestart');
+        if (b) b.addEventListener('click', function(){ hideOverlay(); restart(); });
+        var l = document.getElementById('ovSSLobby');
+        if (l) l.addEventListener('click', function(){ hideOverlay(); go('lobby'); });
+      }, 0);
+    }
+
+    function restart(){
+      game.snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+      game.dir = 'right'; game.nextDir = 'right';
+      game.food = randFood();
+      game.score = 0;
+      game.alive = true;
+      $('ssScore').textContent = '0';
+      draw();
+      if (game.timer) clearInterval(game.timer);
+      game.timer = setInterval(tick, 130);
+    }
+
+    function setDir(d){
+      if (!game.alive) return;
+      game.nextDir = d;
+    }
+
+    document.querySelectorAll('.snake-ctrl button[data-dir]').forEach(function(b){
+      b.addEventListener('click', function(){ setDir(b.getAttribute('data-dir')); });
+    });
+    var keyHandler = function(e){
+      var map = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
+                  w:'up', s:'down', a:'left', d:'right', W:'up', S:'down', A:'left', D:'right' };
+      if (map[e.key]){ e.preventDefault(); setDir(map[e.key]); }
+    };
+    window.addEventListener('keydown', keyHandler);
+
+    var tx = 0, ty = 0;
+    canvas.addEventListener('touchstart', function(e){
+      var t = e.touches[0]; tx = t.clientX; ty = t.clientY;
+    }, { passive: true });
+    canvas.addEventListener('touchmove', function(e){ e.preventDefault(); }, { passive: false });
+    canvas.addEventListener('touchend', function(e){
+      var t = e.changedTouches[0];
+      var dx = t.clientX - tx, dy = t.clientY - ty;
+      if (Math.abs(dx) < 20 && Math.abs(dy) < 20) return;
+      if (Math.abs(dx) > Math.abs(dy)) setDir(dx > 0 ? 'right' : 'left');
+      else setDir(dy > 0 ? 'down' : 'up');
+    });
+
+    $('ssRestart').addEventListener('click', restart);
+    restart();
+    api('GET', '/api/leaderboard?game=snake').then(function(r){
+      if (r.list && r.list.length){
+        var mine = r.list.find(function(x){ return x.username === state.username; });
+        if (mine) $('ssBest').textContent = mine.score;
+      }
+    }).catch(function(){});
+
+    state.snakeSingle = {
+      destroy: function(){
+        game.destroyed = true;
+        if (game.timer) clearInterval(game.timer);
+        window.removeEventListener('keydown', keyHandler);
+      }
+    };
+  }
+
+  function renderSnakeMulti(){
+    var body = $('snakeModeBody');
+    body.innerHTML =
       '<div class="room-panel">' +
         '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:space-between">' +
           '<div>' +
@@ -1411,27 +1784,19 @@ input,textarea{font:inherit;color:inherit}
             '</div>' +
           '</div>' +
         '</div>' +
-      '</div>' +
-    '</div>';
+      '</div>';
 
-    $('backBtn').addEventListener('click', function(){ go('lobby'); });
     $('createRoomBtn').addEventListener('click', function(){
       $('createRoomBtn').disabled = true;
       api('POST', '/api/room/create', { game: 'snake' })
-        .then(function(r){
-          state.room = { id: r.roomId, game: r.game };
-          enterSnakeRoom();
-        })
+        .then(function(r){ state.room = { id: r.roomId, game: r.game }; enterSnakeRoom(); })
         .catch(function(err){ toast(err.message); $('createRoomBtn').disabled = false; });
     });
     $('joinRoomBtn').addEventListener('click', function(){
       var code = ($('joinCode').value || '').trim().toLowerCase();
       if (!code) { toast('请输入房间号'); return; }
       api('POST', '/api/room/join', { roomId: code })
-        .then(function(r){
-          state.room = { id: r.roomId, game: r.game };
-          enterSnakeRoom();
-        })
+        .then(function(r){ state.room = { id: r.roomId, game: r.game }; enterSnakeRoom(); })
         .catch(function(err){ toast(err.message); });
     });
     $('joinCode').addEventListener('keydown', function(e){
@@ -1481,7 +1846,6 @@ input,textarea{font:inherit;color:inherit}
       api('POST', '/api/room/leave', { roomId: state.room.id }).catch(function(){});
       go('lobby');
     });
-
     $('snakeStartBtn').addEventListener('click', function(){
       api('POST', '/api/room/action', { roomId: state.room.id, action: 'start' })
         .catch(function(err){ toast(err.message); });
@@ -1503,6 +1867,7 @@ input,textarea{font:inherit;color:inherit}
     }
   }
 
+  var snakeMultiControlsInited = false;
   function connectSnakeRoom(){
     if (state.es) state.es.close();
     var es = new EventSource('/api/room/events?room=' + encodeURIComponent(state.room.id));
@@ -1510,19 +1875,14 @@ input,textarea{font:inherit;color:inherit}
 
     es.addEventListener('init', function(e){
       var d = JSON.parse(e.data);
-      state.room.game = d.game;
-      state.room.host = d.host;
-      state.room.players = d.players;
-      var chip = $('roomIdChip');
-      if (chip) chip.textContent = '#' + d.roomId.toUpperCase();
-      var rt = $('roomIdText');
-      if (rt) rt.textContent = d.roomId.toUpperCase();
+      state.room.game = d.game; state.room.host = d.host; state.room.players = d.players;
+      var chip = $('roomIdChip'); if (chip) chip.textContent = '#' + d.roomId.toUpperCase();
+      var rt = $('roomIdText'); if (rt) rt.textContent = d.roomId.toUpperCase();
       renderSnakePlayers(d.players, d.host);
     });
     es.addEventListener('players', function(e){
       var d = JSON.parse(e.data);
-      state.room.players = d.players;
-      state.room.host = d.host;
+      state.room.players = d.players; state.room.host = d.host;
       renderSnakePlayers(d.players, d.host);
     });
     es.addEventListener('snake-start', function(e){
@@ -1530,7 +1890,7 @@ input,textarea{font:inherit;color:inherit}
       var pg = $('snakePreGame'), sg = $('snakeGame');
       if (pg) pg.classList.add('hidden');
       if (sg) sg.classList.remove('hidden');
-      initSnakeControls();
+      if (!snakeMultiControlsInited) initSnakeMultiControls();
       renderSnakeState(d.state);
     });
     es.addEventListener('snake-state', function(e){
@@ -1542,8 +1902,7 @@ input,textarea{font:inherit;color:inherit}
       var my = d.state.snakes[state.username];
       var myScore = my ? my.score : 0;
       showOverlay(
-        '<h2>游戏结束</h2>' +
-        '<p>你的得分</p>' +
+        '<h2>游戏结束</h2><p>你的得分</p>' +
         '<div class="big-score">' + myScore + '</div>' +
         '<div class="row">' +
           '<button class="btn btn-primary" id="ovAgain">再来一局</button>' +
@@ -1565,20 +1924,16 @@ input,textarea{font:inherit;color:inherit}
     es.onerror = function(){};
   }
 
-  var snakeControlsInited = false;
-  function initSnakeControls(){
-    if (snakeControlsInited) return;
-    snakeControlsInited = true;
+  function initSnakeMultiControls(){
+    snakeMultiControlsInited = true;
     document.querySelectorAll('.snake-ctrl button[data-dir]').forEach(function(b){
-      b.addEventListener('click', function(){
-        sendSnakeDir(b.getAttribute('data-dir'));
-      });
+      b.addEventListener('click', function(){ sendSnakeDir(b.getAttribute('data-dir')); });
     });
     document.addEventListener('keydown', function(e){
       if (!state.room || state.room.game !== 'snake') return;
       var map = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right',
                   w:'up', s:'down', a:'left', d:'right', W:'up', S:'down', A:'left', D:'right' };
-      if (map[e.key]) { e.preventDefault(); sendSnakeDir(map[e.key]); }
+      if (map[e.key]){ e.preventDefault(); sendSnakeDir(map[e.key]); }
     });
     var canvas = $('snakeCanvas');
     if (canvas){
@@ -1602,9 +1957,7 @@ input,textarea{font:inherit;color:inherit}
     if (!state.room || state.room.game !== 'snake') return;
     if (dir === lastSnakeDir) return;
     lastSnakeDir = dir;
-    api('POST', '/api/room/action', {
-      roomId: state.room.id, action: 'dir', dir: dir
-    }).catch(function(){});
+    api('POST', '/api/room/action', { roomId: state.room.id, action: 'dir', dir: dir }).catch(function(){});
   }
 
   function renderSnakeState(s){
@@ -1613,33 +1966,21 @@ input,textarea{font:inherit;color:inherit}
     if (!canvas) return;
     var ctx = canvas.getContext('2d');
     var W = canvas.width, H = canvas.height;
-    var cellW = W / s.w;
-    var cellH = H / s.h;
+    var cellW = W / s.w, cellH = H / s.h;
 
     ctx.fillStyle = '#0d0f18';
     ctx.fillRect(0, 0, W, H);
-
     ctx.strokeStyle = 'rgba(124,92,255,.06)';
     ctx.lineWidth = 1;
-    for (var i = 1; i < s.w; i++){
-      ctx.beginPath(); ctx.moveTo(i * cellW, 0); ctx.lineTo(i * cellW, H); ctx.stroke();
-    }
-    for (var j = 1; j < s.h; j++){
-      ctx.beginPath(); ctx.moveTo(0, j * cellH); ctx.lineTo(W, j * cellH); ctx.stroke();
-    }
+    for (var i = 1; i < s.w; i++){ ctx.beginPath(); ctx.moveTo(i * cellW, 0); ctx.lineTo(i * cellW, H); ctx.stroke(); }
+    for (var j = 1; j < s.h; j++){ ctx.beginPath(); ctx.moveTo(0, j * cellH); ctx.lineTo(W, j * cellH); ctx.stroke(); }
 
     s.food.forEach(function(f){
-      var fx = f.x * cellW + cellW / 2;
-      var fy = f.y * cellH + cellH / 2;
+      var fx = f.x * cellW + cellW / 2, fy = f.y * cellH + cellH / 2;
       var r = Math.min(cellW, cellH) * 0.32;
       ctx.fillStyle = '#f5c96b';
-      ctx.beginPath();
-      ctx.arc(fx, fy, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowColor = '#f5c96b';
-      ctx.shadowBlur = 15;
-      ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.beginPath(); ctx.arc(fx, fy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowColor = '#f5c96b'; ctx.shadowBlur = 15; ctx.fill(); ctx.shadowBlur = 0;
     });
 
     var scores = [];
@@ -1647,18 +1988,14 @@ input,textarea{font:inherit;color:inherit}
       var sn = s.snakes[u];
       scores.push({ name: sn.name, color: sn.color, score: sn.score, alive: sn.alive });
       sn.body.forEach(function(b, i){
-        var x = b.x * cellW;
-        var y = b.y * cellH;
+        var x = b.x * cellW, y = b.y * cellH;
         var alpha = sn.alive ? (1 - i / (sn.body.length + 5) * 0.7) : 0.25;
         ctx.globalAlpha = alpha;
         ctx.fillStyle = sn.color;
         roundRectS(ctx, x + 1, y + 1, cellW - 2, cellH - 2, Math.min(cellW, cellH) * 0.3);
         ctx.fill();
         if (i === 0 && sn.alive){
-          ctx.shadowColor = sn.color;
-          ctx.shadowBlur = 14;
-          ctx.fill();
-          ctx.shadowBlur = 0;
+          ctx.shadowColor = sn.color; ctx.shadowBlur = 14; ctx.fill(); ctx.shadowBlur = 0;
           ctx.globalAlpha = 1;
           ctx.fillStyle = '#fff';
           var ex = x + cellW / 2, ey = y + cellH / 2;
@@ -1681,16 +2018,6 @@ input,textarea{font:inherit;color:inherit}
         '</div>';
       }).join('');
     }
-  }
-
-  function roundRectS(ctx, x, y, w, h, r){
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
   }
 
   /* ===================== 你画我猜 ===================== */
@@ -1718,20 +2045,14 @@ input,textarea{font:inherit;color:inherit}
     $('createDrawBtn').addEventListener('click', function(){
       $('createDrawBtn').disabled = true;
       api('POST', '/api/room/create', { game: 'draw' })
-        .then(function(r){
-          state.room = { id: r.roomId, game: r.game };
-          enterDrawRoom();
-        })
+        .then(function(r){ state.room = { id: r.roomId, game: r.game }; enterDrawRoom(); })
         .catch(function(err){ toast(err.message); $('createDrawBtn').disabled = false; });
     });
     $('joinDrawBtn').addEventListener('click', function(){
       var code = ($('drawJoinCode').value || '').trim().toLowerCase();
       if (!code) { toast('请输入房间号'); return; }
       api('POST', '/api/room/join', { roomId: code })
-        .then(function(r){
-          state.room = { id: r.roomId, game: r.game };
-          enterDrawRoom();
-        })
+        .then(function(r){ state.room = { id: r.roomId, game: r.game }; enterDrawRoom(); })
         .catch(function(err){ toast(err.message); });
     });
     $('drawJoinCode').addEventListener('keydown', function(e){
@@ -1824,23 +2145,18 @@ input,textarea{font:inherit;color:inherit}
     if (state.es) state.es.close();
     var es = new EventSource('/api/room/events?room=' + encodeURIComponent(state.room.id));
     state.es = es;
-    drawState = { strokes: [], color: '#1a1a1a', drawing: false, isDrawer: false };
+    drawState = { strokes: [], color: '#1a1a1a', drawing: false, isDrawer: false, inited: false };
 
     es.addEventListener('init', function(e){
       var d = JSON.parse(e.data);
-      state.room.game = d.game;
-      state.room.host = d.host;
-      state.room.players = d.players;
-      var chip = $('roomIdChip');
-      if (chip) chip.textContent = '#' + d.roomId.toUpperCase();
-      var rt = $('roomIdText');
-      if (rt) rt.textContent = d.roomId.toUpperCase();
+      state.room.game = d.game; state.room.host = d.host; state.room.players = d.players;
+      var chip = $('roomIdChip'); if (chip) chip.textContent = '#' + d.roomId.toUpperCase();
+      var rt = $('roomIdText'); if (rt) rt.textContent = d.roomId.toUpperCase();
       renderDrawPlayers(d.players, d.host);
     });
     es.addEventListener('players', function(e){
       var d = JSON.parse(e.data);
-      state.room.players = d.players;
-      state.room.host = d.host;
+      state.room.players = d.players; state.room.host = d.host;
       renderDrawPlayers(d.players, d.host);
     });
     es.addEventListener('draw-start', function(e){
@@ -1848,14 +2164,10 @@ input,textarea{font:inherit;color:inherit}
       var pg = $('drawPreGame'), dg = $('drawGame');
       if (pg) pg.classList.add('hidden');
       if (dg) dg.classList.remove('hidden');
-      if (!drawState.inited) {
-        initDrawCanvas();
-        drawState.inited = true;
-      }
+      if (!drawState.inited) { initDrawCanvas(); drawState.inited = true; }
       drawState.strokes = [];
       drawState.isDrawer = d.drawer === state.username;
       clearDrawCanvas();
-      redrawDrawStrokes();
       updateDrawHint(d.revealed);
       $('drawTimer').textContent = d.timeLeft;
       $('drawTools').style.display = drawState.isDrawer ? '' : 'none';
@@ -1868,9 +2180,8 @@ input,textarea{font:inherit;color:inherit}
       }
     });
     es.addEventListener('draw-tick', function(e){
-      var d = JSON.parse(e.data);
       var t = $('drawTimer');
-      if (t) t.textContent = d.timeLeft;
+      if (t) t.textContent = JSON.parse(e.data).timeLeft;
     });
     es.addEventListener('draw-stroke', function(e){
       var d = JSON.parse(e.data);
@@ -1887,15 +2198,13 @@ input,textarea{font:inherit;color:inherit}
       if (d.revealed) updateDrawHint(d.revealed);
     });
     es.addEventListener('draw-reveal', function(e){
-      var d = JSON.parse(e.data);
-      addGuessItem({ sys: true, text: '本轮答案：' + d.word });
+      addGuessItem({ sys: true, text: '本轮答案：' + JSON.parse(e.data).word });
     });
     es.addEventListener('draw-end', function(e){
       var d = JSON.parse(e.data);
       var myScore = d.scores[state.username] || 0;
       showOverlay(
-        '<h2>游戏结束</h2>' +
-        '<p>你的总分</p>' +
+        '<h2>游戏结束</h2><p>你的总分</p>' +
         '<div class="big-score">' + myScore + '</div>' +
         '<div class="row">' +
           '<button class="btn btn-primary" id="ovAgainD">再来一局</button>' +
@@ -1920,10 +2229,7 @@ input,textarea{font:inherit;color:inherit}
       var pg = $('drawPreGame'), dg = $('drawGame');
       if (pg) pg.classList.add('hidden');
       if (dg) dg.classList.remove('hidden');
-      if (!drawState.inited) {
-        initDrawCanvas();
-        drawState.inited = true;
-      }
+      if (!drawState.inited) { initDrawCanvas(); drawState.inited = true; }
       drawState.isDrawer = d.drawer === state.username;
       drawState.strokes = d.strokes || [];
       clearDrawCanvas();
@@ -1939,7 +2245,6 @@ input,textarea{font:inherit;color:inherit}
     var el = $('drawHint');
     if (el) el.textContent = revealed || '_';
   }
-
   function addGuessItem(g){
     var list = $('guessList');
     if (!list) return;
@@ -1954,7 +2259,6 @@ input,textarea{font:inherit;color:inherit}
     list.appendChild(div);
     list.scrollTop = list.scrollHeight;
   }
-
   function clearDrawCanvas(){
     var canvas = $('drawCanvas');
     if (!canvas) return;
@@ -1962,11 +2266,9 @@ input,textarea{font:inherit;color:inherit}
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
-
   function redrawDrawStrokes(){
     drawState.strokes.forEach(function(s){ drawStroke(s); });
   }
-
   function drawStroke(s){
     var canvas = $('drawCanvas');
     if (!canvas) return;
@@ -1982,38 +2284,25 @@ input,textarea{font:inherit;color:inherit}
     ctx.stroke();
   }
 
-  var drawCanvasInited = false;
   function initDrawCanvas(){
-    if (drawCanvasInited) return;
-    drawCanvasInited = true;
     var canvas = $('drawCanvas');
     if (!canvas) return;
     clearDrawCanvas();
-
     var last = null;
 
     function pos(e){
       var rect = canvas.getBoundingClientRect();
       var cx, cy;
-      if (e.touches && e.touches[0]){
-        cx = e.touches[0].clientX; cy = e.touches[0].clientY;
-      } else {
-        cx = e.clientX; cy = e.clientY;
-      }
-      return {
-        x: (cx - rect.left) / rect.width,
-        y: (cy - rect.top) / rect.height
-      };
+      if (e.touches && e.touches[0]){ cx = e.touches[0].clientX; cy = e.touches[0].clientY; }
+      else { cx = e.clientX; cy = e.clientY; }
+      return { x: (cx - rect.left) / rect.width, y: (cy - rect.top) / rect.height };
     }
-
     function send(x1, y1, x2, y2){
       api('POST', '/api/room/action', {
         roomId: state.room.id, action: 'stroke',
-        x1: x1, y1: y1, x2: x2, y2: y2,
-        color: drawState.color, w: 3
+        x1: x1, y1: y1, x2: x2, y2: y2, color: drawState.color, w: 3
       }).catch(function(){});
     }
-
     function onDown(e){
       if (!drawState.isDrawer) return;
       e.preventDefault();
@@ -2025,19 +2314,13 @@ input,textarea{font:inherit;color:inherit}
       e.preventDefault();
       var p = pos(e);
       if (last){
-        var st = {
-          x1: last.x, y1: last.y, x2: p.x, y2: p.y,
-          color: drawState.color, w: 3
-        };
+        var st = { x1: last.x, y1: last.y, x2: p.x, y2: p.y, color: drawState.color, w: 3 };
         drawStroke(st);
         send(st.x1, st.y1, st.x2, st.y2);
       }
       last = p;
     }
-    function onUp(){
-      drawState.drawing = false;
-      last = null;
-    }
+    function onUp(){ drawState.drawing = false; last = null; }
 
     canvas.addEventListener('mousedown', onDown);
     canvas.addEventListener('mousemove', onMove);
@@ -2057,9 +2340,7 @@ input,textarea{font:inherit;color:inherit}
     if (clearBtn){
       clearBtn.addEventListener('click', function(){
         if (!drawState.isDrawer) return;
-        api('POST', '/api/room/action', {
-          roomId: state.room.id, action: 'clear'
-        }).catch(function(){});
+        api('POST', '/api/room/action', { roomId: state.room.id, action: 'clear' }).catch(function(){});
       });
     }
     $('guessForm').addEventListener('submit', function(e){
@@ -2074,21 +2355,135 @@ input,textarea{font:inherit;color:inherit}
     });
   }
 
-  /* ---------- 初始化 ---------- */
-  api('GET', '/api/me')
-    .then(function(r){
-      if (r.authed){
-        state.username = r.username;
-        enterApp();
-      }
-    })
-    .catch(function(){});
-})();
-</script>
-</body>
-</html>
-`;
+  /* ===================== 2048 ===================== */
+  function show2048(){
+    var main = $('main');
+    main.innerHTML = gameHeader('🔢 2048') +
+      '<div class="g2048-stage">' +
+        '<div class="jump-hud">' +
+          '<div class="hud-item">得分<span class="val" id="g2048Score">0</span></div>' +
+          '<div class="hud-item">最高<span class="val" id="g2048Best">0</span></div>' +
+          '<div style="flex:1"></div>' +
+          '<button class="btn btn-secondary btn-sm" id="g2048Restart" type="button">重新开始</button>' +
+        '</div>' +
+        '<div class="g2048-board" id="g2048Board" tabindex="0"></div>' +
+        '<p class="jump-tip">方向键 / WASD 滑动，或在棋盘上滑动手指</p>' +
+      '</div>' +
+    '</div>';
 
-server.listen(PORT, () => {
-  console.log('[games] 欢乐小游戏运行中 http://0.0.0.0:' + PORT);
-});
+    $('backBtn').addEventListener('click', function(){ go('lobby'); });
+
+    var SIZE = 4;
+    var board = [];
+    var score = 0;
+    var grid = [];
+    var destroyed = false;
+
+    function initBoard(){
+      board = [];
+      for (var i = 0; i < SIZE; i++){
+        board.push(new Array(SIZE).fill(0));
+      }
+    }
+    function emptyCells(){
+      var arr = [];
+      for (var i = 0; i < SIZE; i++) for (var j = 0; j < SIZE; j++) if (board[i][j] === 0) arr.push({ x: i, y: j });
+      return arr;
+    }
+    function addRandom(){
+      var empties = emptyCells();
+      if (!empties.length) return;
+      var c = empties[Math.floor(Math.random() * empties.length)];
+      board[c.x][c.y] = Math.random() < 0.9 ? 2 : 4;
+      return c;
+    }
+    function render(){
+      var el = $('g2048Board');
+      if (!el) return;
+      // 重建 DOM
+      var html = '';
+      for (var i = 0; i < SIZE; i++){
+        for (var j = 0; j < SIZE; j++){
+          var v = board[i][j];
+          var cls = 'tile' + (v >= 2048 ? ' big' : '');
+          var dv = v === 0 ? '' : v;
+          html += '<div class="' + cls + '" data-v="' + (v || '') + '">' + (v || '') + '</div>';
+        }
+      }
+      el.innerHTML = html;
+    }
+    function move(dir){
+      if (destroyed) return;
+      var moved = false;
+      var merged = [];
+      for (var i = 0; i < SIZE; i++) merged.push(new Array(SIZE).fill(false));
+
+      var vec = { up: { x: -1, y: 0 }, down: { x: 1, y: 0 }, left: { x: 0, y: -1 }, right: { x: 0, y: 1 } }[dir];
+      var traversals = [];
+      for (var i = 0; i < SIZE; i++) traversals.push(i);
+      var xs = traversals.slice(), ys = traversals.slice();
+      if (vec.x === 1) xs.reverse();
+      if (vec.y === 1) ys.reverse();
+
+      for (var xi = 0; xi < SIZE; xi++){
+        for (var yi = 0; yi < SIZE; yi++){
+          var x = xs[xi], y = ys[yi];
+          if (board[x][y] === 0) continue;
+          var cur = board[x][y];
+          var nx = x, ny = y;
+          while (true){
+            var tx = nx + vec.x, ty = ny + vec.y;
+            if (tx < 0 || tx >= SIZE || ty < 0 || ty >= SIZE) break;
+            if (board[tx][ty] === 0){ nx = tx; ny = ty; continue; }
+            if (board[tx][ty] === cur && !merged[tx][ty]){
+              board[tx][ty] = cur * 2;
+              board[x][y] = 0;
+              if (cur * 2 > 0) score += cur * 2;
+              merged[tx][ty] = true;
+              moved = true;
+              nx = tx; ny = ty;
+              break;
+            }
+            break;
+          }
+          if (nx !== x || ny !== y){
+            board[nx][ny] = cur;
+            board[x][y] = 0;
+            moved = true;
+          }
+        }
+      }
+      if (moved){
+        addRandom();
+        $('g2048Score').textContent = score;
+        render();
+        if (!canMove()){
+          gameOver();
+        }
+      }
+    }
+    function canMove(){
+      if (emptyCells().length) return true;
+      for (var i = 0; i < SIZE; i++){
+        for (var j = 0; j < SIZE; j++){
+          if (i + 1 < SIZE && board[i][j] === board[i+1][j]) return true;
+          if (j + 1 < SIZE && board[i][j] === board[i][j+1]) return true;
+        }
+      }
+      return false;
+    }
+    function gameOver(){
+      api('POST', '/api/score', { game: 'g2048', score: score }).catch(function(){});
+      var best = parseInt($('g2048Best').textContent, 10) || 0;
+      if (score > best) $('g2048Best').textContent = score;
+      showOverlay(
+        '<h2>没有可移动的了</h2><p>你的得分</p>' +
+        '<div class="big-score">' + score + '</div>' +
+        '<div class="row">' +
+          '<button class="btn btn-primary" id="ov2048R">再来一次</button>' +
+          '<button class="btn btn-secondary" id="ov2048L">回大厅</button>' +
+        '</div>'
+      );
+      setTimeout(function(){
+        var b = document.getElementById('ov2048R');
+       
