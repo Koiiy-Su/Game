@@ -12,7 +12,6 @@ const SECRET = process.env.SESSION_SECRET || 'games-v2-secret';
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-/* ===== DB ===== */
 function loadDB() {
   try { const d = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); return { users: d.users || {}, scores: d.scores || {} }; }
   catch (e) { return { users: {}, scores: {} }; }
@@ -27,7 +26,6 @@ function saveDB() {
   }, 100);
 }
 
-/* ===== Auth ===== */
 function hashPw(pw, salt) {
   salt = salt || crypto.randomBytes(16).toString('hex');
   return salt + ':' + crypto.scryptSync(pw, salt, 32).toString('hex');
@@ -59,7 +57,6 @@ function cookies(req) {
 }
 function me(req) { return validToken(cookies(req)['gid']); }
 
-/* ===== Utils ===== */
 function send(res, code, obj, h) {
   res.writeHead(code, Object.assign({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, h || {}));
   res.end(JSON.stringify(obj));
@@ -81,7 +78,6 @@ function board(g, n) {
   return Object.keys(m).map(u => ({ username: u, score: m[u] })).sort((a, b) => b.score - a.score).slice(0, n || 20);
 }
 
-/* ===== Rooms ===== */
 const rooms = new Map();
 function newId() { let i; do { i = crypto.randomBytes(3).toString('hex'); } while (rooms.has(i)); return i; }
 function mkRoom(g, host) { const r = { id: newId(), game: g, host, players: new Map(), state: null, timer: null, clients: new Set(), createdAt: Date.now() }; rooms.set(r.id, r); return r; }
@@ -96,7 +92,6 @@ setInterval(() => {
   for (const [id, r] of rooms) if (!r.players.size && now - r.createdAt > 30 * 6e4) { if (r.timer) clearInterval(r.timer); rooms.delete(id); }
 }, 6e4);
 
-/* ===== Snake multi ===== */
 const SW = 28, SH = 20;
 const DIR = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
 const SCOLORS = ['#e06f92', '#6f9ce0', '#7bb87b', '#e0a56f'];
@@ -159,7 +154,6 @@ function startSnake(r) {
   bc(r, 'snake-start', { state: r.state });
 }
 
-/* ===== Gomoku ===== */
 const GN = 15;
 function startGomoku(r) {
   const us = [...r.players.keys()];
@@ -181,7 +175,6 @@ function gcheck(b, x, y, c) {
   return false;
 }
 
-/* ===== HTTP ===== */
 const server = http.createServer(async (req, res) => {
   const u = url.parse(req.url, true);
   const p = u.pathname, m = req.method;
@@ -333,7 +326,6 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-/* ===== HTML ===== */
 const HTML = '<!doctype html>\n' +
 '<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0f1117"><title>欢乐小游戏</title>\n' +
 '<link href="https://cdn.jsdelivr.net/npm/@fontsource-variable/noto-sans-sc@5.2.10/index.css" rel="stylesheet">\n' +
@@ -383,9 +375,10 @@ const HTML = '<!doctype html>\n' +
 '.snake-side{background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:16px}.snake-side h4{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:0 0 10px}\n' +
 '.snake-scores{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}.snake-score-row{display:flex;align-items:center;gap:10px;font-size:13.5px}.snake-score-row .dot{width:12px;height:12px;border-radius:3px;flex:none}.snake-score-row .name{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.snake-score-row .score{font-weight:700}.snake-score-row.dead{opacity:.4}\n' +
 '.snake-ctrl{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:180px;margin:0 auto}.snake-ctrl button{aspect-ratio:1;border:1px solid var(--border);background:var(--panel2);border-radius:10px;display:grid;place-items:center;font-size:18px}.snake-ctrl button:hover{border-color:var(--accent);color:var(--accent)}.snake-ctrl .empty{background:transparent;border:0;pointer-events:none}\n' +
+/* 2048 - 修复了 color:transparent 的问题 */
 '.g2048-board{position:relative;width:min(100%,460px);aspect-ratio:1;margin:12px auto;background:#1a1d2b;border-radius:14px;padding:12px;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(4,1fr);gap:12px;touch-action:none;user-select:none}\n' +
-'.tile{display:grid;place-items:center;border-radius:10px;font-weight:800;font-size:clamp(20px,5vw,34px);color:transparent;background:#2d3450;transition:transform .12s}\n' +
-'.tile[data-v="2"]{background:#eee4da}.tile[data-v="4"]{background:#ede0c8}.tile[data-v="8"]{background:#f2b179;color:#fff}.tile[data-v="16"]{background:#f59563;color:#fff}.tile[data-v="32"]{background:#f67c5f;color:#fff}.tile[data-v="64"]{background:#f65e3b;color:#fff}.tile[data-v="128"]{background:#edcf72;color:#fff}.tile[data-v="256"]{background:#edcc61;color:#fff}.tile[data-v="512"]{background:#edc850;color:#fff}.tile[data-v="1024"]{background:#edc53f;color:#fff}.tile[data-v="2048"]{background:#edc22e;color:#fff}\n' +
+'.tile{display:grid;place-items:center;border-radius:10px;font-weight:800;font-size:clamp(20px,5vw,34px);color:#776e65;background:#2d3450;transition:transform .12s}\n' +
+'.tile[data-v="2"]{background:#eee4da;color:#776e65}.tile[data-v="4"]{background:#ede0c8;color:#776e65}.tile[data-v="8"]{background:#f2b179;color:#fff}.tile[data-v="16"]{background:#f59563;color:#fff}.tile[data-v="32"]{background:#f67c5f;color:#fff}.tile[data-v="64"]{background:#f65e3b;color:#fff}.tile[data-v="128"]{background:#edcf72;color:#fff;font-size:clamp(18px,4.5vw,30px)}.tile[data-v="256"]{background:#edcc61;color:#fff;font-size:clamp(18px,4.5vw,30px)}.tile[data-v="512"]{background:#edc850;color:#fff;font-size:clamp(18px,4.5vw,30px)}.tile[data-v="1024"]{background:#edc53f;color:#fff;font-size:clamp(15px,3.8vw,26px)}.tile[data-v="2048"]{background:#edc22e;color:#fff;font-size:clamp(15px,3.8vw,26px)}\n' +
 '.gomoku-wrap{display:grid;gap:18px;grid-template-columns:1fr 240px}@media(max-width:800px){.gomoku-wrap{grid-template-columns:1fr}}\n' +
 '.gomoku-canvas{width:100%;height:auto;display:block;border-radius:10px;background:#d9b382;cursor:pointer;touch-action:manipulation}\n' +
 '.gomoku-side{background:var(--panel2);border:1px solid var(--border);border-radius:14px;padding:16px}.gomoku-turn{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-weight:700}.gomoku-turn .stone{width:22px;height:22px;border-radius:50%;border:2px solid rgba(0,0,0,.3);flex:none}.stone.black{background:#1a1a1a}.stone.white{background:#f5f5f5}\n' +
@@ -412,12 +405,12 @@ const HTML = '<!doctype html>\n' +
 '(function(){\n' +
 '"use strict";\n' +
 'var $=function(i){return document.getElementById(i)};\n' +
-'var state={username:null,view:"lobby",room:null,es:null,lbGame:"jump",jump:null,snakeSingle:null,g2048:null};\n' +
+'var state={username:null,view:"lobby",room:null,es:null,lbGame:"jump",jump:null,snakeSingle:null,g2048:null,gomokuState:null};\n' +
 'function toast(m){var t=$("toast");t.textContent=m;t.classList.add("on");clearTimeout(t._t);t._t=setTimeout(function(){t.classList.remove("on")},2400)}\n' +
 'function esc(s){return String(s==null?"":s).replace(/[&<>"\']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;"}[c]})}\n' +
-'function api(method,path,body){return fetch(path,{method:method,headers:body?{"Content-Type":"application/json"}:undefined,body:body?JSON.stringify(body):undefined,credentials:"same-origin"}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw Object.assign(new Error(j.error||"请求失败"),{status:r.status});return j})})}\n' +
+'function api(method,path,b){return fetch(path,{method:method,headers:b?{"Content-Type":"application/json"}:undefined,body:b?JSON.stringify(b):undefined,credentials:"same-origin"}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw Object.assign(new Error(j.error||"请求失败"),{status:r.status});return j})})}\n' +
 'function avaChar(n){return (n||"?").slice(0,1).toUpperCase()}\n' +
-'function showOv(html){$("overlayCard").innerHTML=html;$("overlay").classList.add("on")}\n' +
+'function showOv(h){$("overlayCard").innerHTML=h;$("overlay").classList.add("on")}\n' +
 'function hideOv(){$("overlay").classList.remove("on")}\n' +
 '$("overlay").addEventListener("click",function(e){if(e.target===$("overlay"))hideOv()});\n' +
 'var authMode="login";\n' +
@@ -451,9 +444,8 @@ const HTML = '<!doctype html>\n' +
 '}\n' +
 'function loadLB(){var l=$("lbList");if(!l)return;api("GET","/api/leaderboard?game="+encodeURIComponent(state.lbGame)).then(function(r){if(!r.list||!r.list.length){l.innerHTML=\'<div class="lb-empty">还没有记录，快来抢占第一名 🥇</div>\';return}l.innerHTML=r.list.map(function(x,i){return \'<div class="lb-row\'+(x.username===state.username?" me":"")+\'"><span class="lb-rank">\'+(i+1)+\'</span><span class="lb-name">\'+esc(x.username)+\'</span><span class="lb-score">\'+x.score+\'</span></div>\'}).join("")}).catch(function(){l.innerHTML=\'<div class="lb-empty">加载失败</div>\'})}\n' +
 'function head(title,extra){return \'<div class="wrap game-view"><div class="game-head"><button class="back-btn" id="backBtn" type="button">←</button><h1>\'+title+\'</h1><div class="spacer"></div>\'+(extra||"")+\'</div>\'}\n' +
-'function backLobby(){$("backBtn").addEventListener("click",function(){go("lobby")})}\n' +
+'function backLobby(){var b=$("backBtn");if(b)b.addEventListener("click",function(){go("lobby")})}\n' +
 '\n' +
-/* ===== 跳一跳 ===== */
 'function showJump(){\n' +
 '  var m=$("main");\n' +
 '  m.innerHTML=head("🎯 跳一跳")+\'<div class="stage"><div class="hud"><div class="hud-item">得分<span class="val" id="jumpScore">0</span></div><div class="hud-item">最高<span class="val" id="jumpBest">0</span></div><div style="flex:1"></div><button class="btn btn-secondary btn-sm" id="jumpRestart">重新开始</button></div><canvas class="jump-canvas" id="jumpCanvas" width="900" height="500"></canvas><p class="tip">按住屏幕或空格键蓄力，松开跳跃</p></div></div>\';\n' +
@@ -506,7 +498,6 @@ const HTML = '<!doctype html>\n' +
 '  state.jump={destroy:function(){g.dead=true;cancelAnimationFrame(raf);window.removeEventListener("mouseup",up);window.removeEventListener("touchend",up);window.removeEventListener("keydown",kd);window.removeEventListener("keyup",ku)}}\n' +
 '}\n' +
 '\n' +
-/* ===== 贪吃蛇 ===== */
 'function showSnakeLobby(){\n' +
 '  var m=$("main");\n' +
 '  m.innerHTML=head("🐍 贪吃蛇")+\'<div class="mode-tabs" id="smt"><button class="on" data-mode="single">单人模式</button><button data-mode="multi">联机模式</button></div><div id="snakeBody"></div></div>\';\n' +
@@ -614,7 +605,6 @@ const HTML = '<!doctype html>\n' +
 '  var sl=$("sScores");if(sl){sc.sort(function(a,b){return b.score-a.score});sl.innerHTML=sc.map(function(x){return \'<div class="snake-score-row\'+(x.alive?"":" dead")+\'"><span class="dot" style="background:\'+x.color+\'"></span><span class="name">\'+esc(x.name)+(x.name===state.username?" (我)":"")+\'</span><span class="score">\'+x.score+\'</span></div>\'}).join("")}\n' +
 '}\n' +
 '\n' +
-/* ===== 2048 ===== */
 'function show2048(){\n' +
 '  var m=$("main");\n' +
 '  m.innerHTML=head("🔢 2048")+\'<div class="stage"><div class="hud"><div class="hud-item">得分<span class="val" id="g2048Score">0</span></div><div class="hud-item">最高<span class="val" id="g2048Best">0</span></div><div style="flex:1"></div><button class="btn btn-secondary btn-sm" id="g2048Restart">重新开始</button></div><div class="g2048-board" id="g2048Board"></div><p class="tip">方向键 / WASD 滑动，或在棋盘上滑动手指</p></div></div>\';\n' +
@@ -650,7 +640,6 @@ const HTML = '<!doctype html>\n' +
 '  state.g2048={destroy:function(){destroyed=true;window.removeEventListener("keydown",kd)}}\n' +
 '}\n' +
 '\n' +
-/* ===== 五子棋 ===== */
 'function showGomokuLobby(){\n' +
 '  var m=$("main");\n' +
 '  m.innerHTML=head("⚫ 五子棋")+\'<div class="room-panel"><div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:space-between"><div><div style="font-size:13px;color:var(--muted);margin-bottom:6px;font-weight:600">创建房间，把房间号发给好友</div><button class="btn btn-primary" id="crBtn">创建新房间</button></div><div style="text-align:right"><div style="font-size:13px;color:var(--muted);margin-bottom:6px;font-weight:600">或输入房间号加入</div><div style="display:flex;gap:8px"><input class="input" id="jcIn" placeholder="6 位房间号" maxlength="6" style="width:130px;text-transform:lowercase"><button class="btn btn-secondary" id="jrBtn">加入</button></div></div></div></div></div>\';\n' +
@@ -692,7 +681,8 @@ const HTML = '<!doctype html>\n' +
 '    var rect=cv.getBoundingClientRect();\n' +
 '    var x=e.clientX-rect.left,y=e.clientY-rect.top;\n' +
 '    var N=state.gomokuState.n;\n' +
-'    var cx=Math.round((x/rect.width)*(N+1))-1,cy=Math.round((y/rect.height)*(N+1))-1;\n' +
+'    var pad=1/(N+1);\n' +
+'    var cx=Math.round(x/rect.width*(N+1))-1,cy=Math.round(y/rect.height*(N+1))-1;\n' +
 '    if(cx<0||cx>=N||cy<0||cy>=N)return;\n' +
 '    api("POST","/api/room/action",{roomId:state.room.id,action:"place",x:cx,y:cy}).catch(function(err){toast(err.message)});\n' +
 '  });\n' +
@@ -724,7 +714,7 @@ const HTML = '<!doctype html>\n' +
 '      t.innerHTML=\'<span class="stone \'+(s.winner===1?"black":"white")+\'"></span>\'+(s.winner===1?esc(s.players[0]):esc(s.players[1]))+\' 获胜！\';\n' +
 '      $("gRestart").style.display="";\n' +
 '    }else{\n' +
-'      t.innerHTML=\'<span class="stone \'+(s.turn===1?"black":"white")+\'"></span>\'+(s.turn===1?"黑棋":\'白棋\')+\'回合\';\n' +
+'      t.innerHTML=\'<span class="stone \'+(s.turn===1?"black":"white")+\'"></span>\'+(s.turn===1?"黑棋":"白棋")+\'回合\';\n' +
 '      var myTurn=(myC===s.turn);\n' +
 '      info.innerHTML=\'你执\'+(myC===1?"黑棋":(myC===2?"白棋":"旁观"))+\'<br>\'+(myTurn?\'<b style="color:var(--accent)">轮到你了</b>\':"等待对手落子…");\n' +
 '      $("gRestart").style.display="none";\n' +
@@ -732,7 +722,6 @@ const HTML = '<!doctype html>\n' +
 '  }\n' +
 '}\n' +
 '\n' +
-'/* ===== init ===== */\n' +
 'api("GET","/api/me").then(function(r){if(r.authed){state.username=r.username;enterApp()}}).catch(function(){});\n' +
 '})();\n' +
 '</script></body></html>';
