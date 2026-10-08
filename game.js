@@ -1,7 +1,3 @@
-
-## 文件 4：`friend.js`（完整代码）
-
-```javascript
 'use strict';
 /*
  * 欢乐小游戏 · 多人在线小游戏平台
